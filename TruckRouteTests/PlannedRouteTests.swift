@@ -64,6 +64,34 @@ final class PlannedRouteTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(dropoff.rate(per: .miles)), 1000.0 / 110.0, accuracy: 0.001)
     }
 
+    // MARK: Per-load miles
+
+    func testALoadsMilesAreItsEmptyRunInPlusItsLoadedRun() throws {
+        var route = sampleRoute(rate: 1000)
+        route.stops[2].allMiles = nil
+        route.assignLoadMiles()
+        XCTAssertEqual(try XCTUnwrap(route.stops[2].allMiles) / mile, 110, accuracy: 0.001)
+    }
+
+    /// Counting a leg MapKit couldn't measure as zero miles made the load
+    /// look better than it is: here it would have been $1,000 over the 10
+    /// empty miles alone, $100/mi.
+    func testALoadWithAnUnmeasuredLoadedLegHasNoRatePerMile() {
+        var route = sampleRoute(rate: 1000)
+        route.stops[2].distance = nil
+        route.assignLoadMiles()
+        XCTAssertNil(route.stops[2].allMiles)
+        XCTAssertNil(route.stops[2].rate(per: .miles))
+    }
+
+    func testALoadWithAnUnmeasuredEmptyLegHasNoRatePerMile() {
+        var route = sampleRoute(rate: 1000)
+        route.stops[1].distance = nil
+        route.assignLoadMiles()
+        XCTAssertNil(route.stops[2].allMiles)
+        XCTAssertNil(route.stops[2].rate(per: .miles))
+    }
+
     func testTotalRateCountsEachLoadOnceRatherThanPerStop() throws {
         // The rate rides on both the pickup and the drop-off stop.
         XCTAssertEqual(try XCTUnwrap(sampleRoute(rate: 1000).totalRate), 1000, accuracy: 0.001)

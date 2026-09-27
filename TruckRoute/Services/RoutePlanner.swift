@@ -172,15 +172,7 @@ final class RoutePlanner {
             route = working
         }
 
-        // A load's miles are the empty run to its pickup plus the loaded run to
-        // its drop-off. Stops are built pickup-then-drop-off, so the leg before
-        // a drop-off is always that load's deadhead.
-        for index in working.stops.indices where working.stops[index].kind == .dropoff {
-            let loaded = working.stops[index].distance ?? 0
-            let empty = index > 0 ? (working.stops[index - 1].distance ?? 0) : 0
-            working.stops[index].allMiles = loaded + empty
-        }
-
+        working.assignLoadMiles()
         working.stops = RouteScheduler.schedule(working.stops)
         route = working
     }
