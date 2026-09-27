@@ -25,8 +25,20 @@ struct LoadFormView: View {
     @State private var notes = ""
     @State private var rateText = ""
 
+    /// `onAppear` fires again every time the place picker pops back to this
+    /// form. Reloading the stored load then would throw away the place just
+    /// picked, along with every other unsaved edit, so it only happens once.
+    @State private var hasLoadedExisting = false
+
     private var canSave: Bool {
-        pickup != nil && dropoff != nil && scheduleError == nil
+        pickup != nil && dropoff != nil && scheduleError == nil && rateError == nil
+    }
+
+    /// Something was typed in the rate field but it isn't a number. Saving
+    /// used to quietly store no rate at all.
+    private var rateError: String? {
+        guard !rateText.trimmed.isEmpty, MoneyInput.parse(rateText) == nil else { return nil }
+        return "Rate isn't a number."
     }
 
     /// Concise, in-form validation for the handful of ways this schedule can
@@ -120,6 +132,10 @@ struct LoadFormView: View {
                 Section {
                     TextField("Rate", text: $rateText)
                         .keyboardType(.decimalPad)
+                    if let rateError {
+                        Label(rateError, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
                 } header: {
                     Text("Pay")
                 } footer: {
@@ -157,7 +173,8 @@ struct LoadFormView: View {
     }
 
     private func loadExisting() {
-        guard let load else { return }
+        guard let load, !hasLoadedExisting else { return }
+        hasLoadedExisting = true
         reference = load.reference
         pickup = load.pickup
         dropoff = load.dropoff
@@ -165,7 +182,7 @@ struct LoadFormView: View {
         notes = load.notes
         serviceDurationMinutes = load.serviceDurationMinutes
         if let rate = load.rate {
-            rateText = rate.formatted(.number.precision(.fractionLength(0...2)))
+            rateText = MoneyInput.text(for: rate)
         }
         if let windowEnd = load.pickupWindowEnd {
             hasPickupWindowEnd = true
@@ -201,9 +218,7 @@ struct LoadFormView: View {
         target.deliveryWindowEnd = hasDeliveryWindow ? deliveryWindowEnd : nil
         target.serviceDurationMinutes = serviceDurationMinutes
         target.notes = notes
-        // Tolerate "$2,400" and the like.
-        let digits = rateText.filter { $0.isNumber || $0 == "." }
-        target.rate = digits.isEmpty ? nil : Double(digits)
+        target.rate = MoneyInput.parse(rateText)
 
         dismiss()
     }
