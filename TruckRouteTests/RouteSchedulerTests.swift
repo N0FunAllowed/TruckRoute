@@ -108,6 +108,41 @@ final class RouteSchedulerTests: XCTestCase {
         XCTAssertEqual(day2Arrival, date(1, RouteScheduler.defaultDayStartHour, 30))
     }
 
+    /// A new day can't start before the truck has finished the previous
+    /// day's work. Here day 1's drop-off doesn't open until the afternoon
+    /// of day 2, so day 2's pickup has to wait for it. Resetting to 08:00
+    /// regardless would put the truck in two places at once, and report a
+    /// pickup it will actually miss as on time.
+    func testANewDayStartsNoEarlierThanThePreviousDaysWorkFinished() throws {
+        let day1 = date(0, 0)
+        let day2 = date(1, 0)
+        let stops = [
+            stop(.start),
+            // 08:00 + 1h drive = 09:00, 30 min on site → leaves 09:30.
+            stop(.pickup, day: day1, serviceDurationMinutes: 30, travelTime: 3600),
+            // Arrives 14:30 on day 1, but the drop-off doesn't open until
+            // 14:00 on day 2; 30 min on site → leaves day 2 at 14:30.
+            stop(
+                .dropoff,
+                day: day1,
+                windowStart: date(1, 14),
+                serviceDurationMinutes: 30,
+                travelTime: 5 * 3600
+            ),
+            // Day 2's pickup closes at noon. 14:30 + 1h drive = 15:30: late.
+            stop(.pickup, day: day2, deadline: date(1, 12), travelTime: 3600),
+        ]
+
+        let scheduled = schedule(stops)
+
+        let arrivals = try scheduled.dropFirst().map { try XCTUnwrap($0.scheduledArrival) }
+        XCTAssertEqual(arrivals, arrivals.sorted(), "every arrival must be no earlier than the one before it")
+
+        XCTAssertEqual(try XCTUnwrap(scheduled[2].scheduledDeparture), date(1, 14, 30))
+        XCTAssertEqual(try XCTUnwrap(scheduled[3].scheduledArrival), date(1, 15, 30))
+        XCTAssertTrue(scheduled[3].isLate)
+    }
+
     // MARK: Waiting for a window
 
     func testArrivingBeforeAWindowOpensWaitsRatherThanArrivingEarly() throws {

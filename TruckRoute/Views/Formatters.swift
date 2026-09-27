@@ -25,6 +25,17 @@ enum Format {
         date.formatted(.dateTime.weekday(.wide).month().day())
     }
 
+    /// A scheduled time, with the weekday added whenever it doesn't fall on
+    /// the operating day the stop is listed under. A drop-off that doesn't
+    /// open until the next afternoon, or work that runs past midnight, would
+    /// otherwise read as that time on the wrong day.
+    static func time(_ date: Date, listedUnder day: Date?, calendar: Calendar = .current) -> String {
+        if let day, calendar.isDate(date, inSameDayAs: day) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+    }
+
     static func money(_ amount: Double) -> String {
         amount.formatted(.currency(code: currencyCode).precision(.fractionLength(0)))
     }

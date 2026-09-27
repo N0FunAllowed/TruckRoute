@@ -201,7 +201,7 @@ private struct RouteStopRow: View {
                             .foregroundStyle(.orange)
                     } else if let arrival = stop.scheduledArrival {
                         Label(
-                            arrival.formatted(date: .omitted, time: .shortened),
+                            Format.time(arrival, listedUnder: stop.day),
                             systemImage: stop.isLate ? "exclamationmark.triangle.fill" : "clock"
                         )
                         .font(.caption)
