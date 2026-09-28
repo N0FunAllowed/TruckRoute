@@ -64,7 +64,10 @@ enum RoutePDFRenderer {
 
             for (index, stop) in route.stops.enumerated() {
                 ensureSpace(for: 60, context) // keep one stop's block from splitting mid-entry when it fits
-                draw("\(index). \(stop.kind.label) — \(stop.placeName)", font: headerFont, context)
+                // The load reference is what gets quoted at the gate, so the
+                // printed sheet carries it just as the on-screen row does.
+                let reference = stop.loadReference.map { " · \($0)" } ?? ""
+                draw("\(index). \(stop.kind.label)\(reference) — \(stop.placeName)", font: headerFont, context)
                 draw(stop.address, font: bodyFont, context)
 
                 if stop.hasUnknownSchedule {

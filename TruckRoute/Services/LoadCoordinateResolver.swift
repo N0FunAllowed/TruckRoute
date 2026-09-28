@@ -14,6 +14,12 @@ import CoreLocation
 ///
 /// The geocoder is injected so this is testable without a network call or a
 /// live `CLGeocoder`/MapKit round trip.
+///
+/// The resolving methods are `@MainActor` because they read and write a
+/// `Place` that belongs to the main model context. A plain `async` method
+/// doesn't inherit its caller's actor, so even called from the main-actor
+/// `RoutePlanner` it would run on a background executor and touch SwiftData
+/// off the main thread.
 struct LoadCoordinateResolver {
     typealias Geocoder = (String) async throws -> CLLocationCoordinate2D
 
@@ -26,6 +32,7 @@ struct LoadCoordinateResolver {
     /// The place's coordinate if it already has one cached; otherwise geocodes
     /// its current address and caches the result back onto the place, so the
     /// next call (this load or any other pointing at the same place) is free.
+    @MainActor
     func resolve(_ place: Place) async throws -> CLLocationCoordinate2D {
         if let cached = place.coordinate {
             return cached
@@ -35,6 +42,7 @@ struct LoadCoordinateResolver {
         return coordinate
     }
 
+    @MainActor
     func resolvePickup(of load: Load) async throws -> CLLocationCoordinate2D {
         guard let pickup = load.pickup else {
             throw LoadCoordinateError.missingPlace(role: "pickup")
@@ -42,6 +50,7 @@ struct LoadCoordinateResolver {
         return try await resolve(pickup)
     }
 
+    @MainActor
     func resolveDropoff(of load: Load) async throws -> CLLocationCoordinate2D {
         guard let dropoff = load.dropoff else {
             throw LoadCoordinateError.missingPlace(role: "drop-off")

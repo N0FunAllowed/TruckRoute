@@ -44,10 +44,20 @@ enum RouteScheduler {
             // Reset only when the stop's *assigned* operating day advances.
             if let stopDay, stopDay != activeOperatingDay {
                 activeOperatingDay = stopDay
-                clock = dayStart(for: stopDay, calendar: calendar)
-                // A new day is anchored to its own start rather than to how
-                // the previous one finished, so an earlier unmeasured leg
-                // stops mattering from here.
+                // A new day starts at its usual hour unless the truck is
+                // still busy with the previous day's work by then — a drop
+                // whose window opens the next afternoon, say. The truck can't
+                // be in two places, so the later of the two wins; always
+                // taking the day start would schedule the new day's first
+                // stop before the truck could possibly get there and hide it
+                // being late.
+                let start = dayStart(for: stopDay, calendar: calendar)
+                clock = max(start, clock ?? start)
+                // An earlier unmeasured leg left the clock nil, so this day
+                // is anchored to its own start and the unknown stops
+                // mattering from here. That assumes the unknown day finished
+                // before this one began, which is the open design question
+                // `testANewOperatingDayRecoversFromAnEarlierMissingLeg` pins.
                 scheduleIsUnknown = false
             }
 

@@ -86,7 +86,8 @@ struct RouteStop: Identifiable {
 
     /// Every leg driven to earn this load: the empty run to its pickup plus
     /// the loaded run to its drop-off. Set on drop-off stops once legs are
-    /// measured.
+    /// measured, and left nil if either leg couldn't be — see
+    /// `PlannedRoute.assignLoadMiles()`.
     var allMiles: CLLocationDistance?
 
     /// The leg arriving here is empty — running to a pickup with nothing on,
@@ -165,5 +166,26 @@ struct PlannedRoute {
     func rate(per unit: DistanceUnit) -> Double? {
         guard let totalRate, totalDistance > 0 else { return nil }
         return totalRate / (totalDistance / unit.metersPerUnit)
+    }
+
+    /// Fills in `allMiles` on every drop-off from the legs already measured.
+    ///
+    /// A load's miles are the empty run to its pickup plus the loaded run to
+    /// its drop-off. Stops are built pickup-then-drop-off, so the leg before
+    /// a drop-off is always that load's deadhead. If either leg couldn't be
+    /// measured the load's miles are unknown, not short: counting the gap as
+    /// zero would report a rate per mile better than the real one, on the
+    /// one number that decides whether a load was worth taking.
+    mutating func assignLoadMiles() {
+        for index in stops.indices where stops[index].kind == .dropoff {
+            guard index > 0,
+                  let loaded = stops[index].distance,
+                  let empty = stops[index - 1].distance
+            else {
+                stops[index].allMiles = nil
+                continue
+            }
+            stops[index].allMiles = loaded + empty
+        }
     }
 }

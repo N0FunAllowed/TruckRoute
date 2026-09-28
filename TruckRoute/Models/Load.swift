@@ -25,8 +25,10 @@ final class Load {
     /// What the load pays, before any costs. Nil when it isn't known yet.
     var rate: Double?
     /// Delivered loads are done — kept for the record, but out of the way of
-    /// both the working list and route planning.
-    var isDelivered: Bool
+    /// both the working list and route planning. Inline default for the
+    /// same migration reason as `serviceDurationMinutes`: master already
+    /// ships a `Load` without this field.
+    var isDelivered: Bool = false
 
     static let defaultServiceDurationMinutes = 30
 

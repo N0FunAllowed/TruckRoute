@@ -164,12 +164,19 @@ struct PlaceFormView: View {
     private func lookUpTypedAddress() {
         isLookingUp = true
         lookupError = nil
+        let lookedUp = address
         Task {
             defer { isLookingUp = false }
             do {
-                confirmed = try await GeocodingService.shared.coordinate(for: address.trimmed)
+                let coordinate = try await GeocodingService.shared.coordinate(for: lookedUp.trimmed)
+                // The field stays editable while this runs. If the address
+                // changed meanwhile, this coordinate is for the old text, and
+                // saving it against the new one would route to the wrong place.
+                guard address == lookedUp else { return }
+                confirmed = coordinate
                 completer.clear()
             } catch {
+                guard address == lookedUp else { return }
                 lookupError = error.localizedDescription
             }
         }
