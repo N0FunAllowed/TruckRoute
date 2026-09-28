@@ -7,7 +7,17 @@ struct PlacePicker: View {
     @Binding var selection: Place?
 
     @Query(sort: \Place.name) private var places: [Place]
+    @Environment(\.dismiss) private var dismiss
     @State private var isAdding = false
+    @State private var searchText = ""
+
+    private var filteredPlaces: [Place] {
+        guard !searchText.trimmed.isEmpty else { return places }
+        return places.filter {
+            $0.displayName.localizedCaseInsensitiveContains(searchText)
+                || $0.address.localizedCaseInsensitiveContains(searchText)
+        }
+    }
 
     var body: some View {
         List {
@@ -17,10 +27,13 @@ struct PlacePicker: View {
                     systemImage: "book.closed",
                     description: Text("Add one with the + button.")
                 )
+            } else if filteredPlaces.isEmpty {
+                ContentUnavailableView.search(text: searchText)
             }
-            ForEach(places) { place in
+            ForEach(filteredPlaces) { place in
                 Button {
                     selection = place
+                    dismiss()
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -39,6 +52,7 @@ struct PlacePicker: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "Search addresses")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("New address", systemImage: "plus") { isAdding = true }

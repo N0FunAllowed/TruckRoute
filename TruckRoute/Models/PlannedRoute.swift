@@ -29,15 +29,65 @@ struct RouteStop: Identifiable {
     /// What the load this stop belongs to pays. Nil on the start.
     let loadRate: Double?
 
+    /// The earliest this stop can be worked — arriving before this means
+    /// waiting. Nil means no window, so any arrival time is fine.
+    let windowStart: Date?
+    /// The latest this stop should be worked. Nil means no deadline. For a
+    /// drop-off this is the delivery window's end if one was set, otherwise
+    /// the load's plain delivery deadline — see `Load.deliveryWindowEnd`.
+    let deadline: Date?
+    /// How long the truck sits here before it can leave. Zero for the yard
+    /// stops at either end of the route.
+    let serviceDurationMinutes: Int
+
+    init(
+        kind: StopKind,
+        placeName: String,
+        address: String,
+        coordinate: CLLocationCoordinate2D,
+        loadReference: String?,
+        day: Date?,
+        loadRate: Double?,
+        windowStart: Date? = nil,
+        deadline: Date? = nil,
+        serviceDurationMinutes: Int = 0
+    ) {
+        self.kind = kind
+        self.placeName = placeName
+        self.address = address
+        self.coordinate = coordinate
+        self.loadReference = loadReference
+        self.day = day
+        self.loadRate = loadRate
+        self.windowStart = windowStart
+        self.deadline = deadline
+        self.serviceDurationMinutes = serviceDurationMinutes
+    }
+
     /// Drive from the previous stop to this one. Nil for the start, or if
     /// MapKit couldn't find a road route.
     var travelTime: TimeInterval?
     var distance: CLLocationDistance?
     var polyline: MKPolyline?
 
+    /// When the truck is scheduled to reach this stop and to leave it again,
+    /// filled in by `RouteScheduler` once legs are measured. Nil until then,
+    /// and nil when `hasUnknownSchedule` is true.
+    var scheduledArrival: Date?
+    var scheduledDeparture: Date?
+    /// True when the scheduled arrival is after `deadline`. Always false when
+    /// the schedule is unknown — an arrival nobody can work out isn't late,
+    /// and it certainly isn't on time.
+    var isLate: Bool = false
+    /// True when the drive to this stop, or to something before it that day,
+    /// was never measured, so there's no honest arrival time to give. Distinct
+    /// from the yard start, which simply has no schedule to report.
+    var hasUnknownSchedule: Bool = false
+
     /// Every leg driven to earn this load: the empty run to its pickup plus
     /// the loaded run to its drop-off. Set on drop-off stops once legs are
-    /// measured.
+    /// measured, and left nil if either leg couldn't be — see
+    /// `PlannedRoute.assignLoadMiles()`.
     var allMiles: CLLocationDistance?
 
     /// The leg arriving here is empty — running to a pickup with nothing on,
@@ -45,11 +95,11 @@ struct RouteStop: Identifiable {
     /// they're what separates a good rate from a bad one.
     var isDeadheadLeg: Bool { kind == .pickup || kind == .end }
 
-    /// Rate per mile measured against all miles, loaded and empty, which is how
-    /// owner-operators judge a load.
-    var ratePerMile: Double? {
+    /// Rate per unit measured against every mile driven for this load, loaded
+    /// and empty, which is how owner-operators judge one.
+    func rate(per unit: DistanceUnit) -> Double? {
         guard let loadRate, let allMiles, allMiles > 0 else { return nil }
-        return loadRate / (allMiles / 1609.344)
+        return loadRate / (allMiles / unit.metersPerUnit)
     }
 }
 
@@ -86,6 +136,21 @@ struct PlannedRoute {
         stops.filter(\.isDeadheadLeg).compactMap(\.distance).reduce(0, +)
     }
 
+    /// Legs MapKit couldn't measure. Any of these means the mileage and the
+    /// rate per mile below are understated, so the route says so rather than
+    /// quietly reporting a number that's too good.
+    var unmeasuredLegs: Int {
+        stops.dropFirst().filter { $0.distance == nil }.count
+    }
+
+    /// Stops whose arrival can't be worked out because a drive time is
+    /// missing. Separate from `unmeasuredLegs`, which counts the mileage
+    /// those same gaps cost: one unmeasured leg can leave several later
+    /// stops unschedulable.
+    var stopsWithUnknownSchedule: Int {
+        stops.filter(\.hasUnknownSchedule).count
+    }
+
     var deadheadShare: Double? {
         guard totalDistance > 0 else { return nil }
         return emptyDistance / totalDistance
@@ -98,8 +163,29 @@ struct PlannedRoute {
     }
 
     /// Revenue over every mile of the route, empty ones included.
-    var ratePerMile: Double? {
+    func rate(per unit: DistanceUnit) -> Double? {
         guard let totalRate, totalDistance > 0 else { return nil }
-        return totalRate / (totalDistance / 1609.344)
+        return totalRate / (totalDistance / unit.metersPerUnit)
+    }
+
+    /// Fills in `allMiles` on every drop-off from the legs already measured.
+    ///
+    /// A load's miles are the empty run to its pickup plus the loaded run to
+    /// its drop-off. Stops are built pickup-then-drop-off, so the leg before
+    /// a drop-off is always that load's deadhead. If either leg couldn't be
+    /// measured the load's miles are unknown, not short: counting the gap as
+    /// zero would report a rate per mile better than the real one, on the
+    /// one number that decides whether a load was worth taking.
+    mutating func assignLoadMiles() {
+        for index in stops.indices where stops[index].kind == .dropoff {
+            guard index > 0,
+                  let loaded = stops[index].distance,
+                  let empty = stops[index - 1].distance
+            else {
+                stops[index].allMiles = nil
+                continue
+            }
+            stops[index].allMiles = loaded + empty
+        }
     }
 }

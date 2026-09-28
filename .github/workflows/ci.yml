@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'claude/**']
   pull_request:
 
 concurrency:
@@ -10,8 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build TruckRoute
+  test:
+    name: Build and test TruckRoute
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -19,11 +19,25 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Build
+      - name: Pick a simulator
         run: |
-          xcodebuild build \
+          UDID=$(xcrun simctl list devices available \
+            | grep -E '^[[:space:]]+iPhone' \
+            | head -n 1 \
+            | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')
+          if [ -z "$UDID" ]; then
+            echo "No iPhone simulator available on this runner." >&2
+            xcrun simctl list devices available >&2
+            exit 1
+          fi
+          echo "Using simulator $UDID"
+          echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build and test
+        run: |
+          xcodebuild test \
             -project TruckRoute.xcodeproj \
             -scheme TruckRoute \
             -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "id=${SIMULATOR_UDID}" \
             CODE_SIGNING_ALLOWED=NO

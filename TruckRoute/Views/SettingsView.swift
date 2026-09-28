@@ -3,6 +3,7 @@ import SwiftData
 
 struct SettingsView: View {
     @Query(sort: \Place.name) private var places: [Place]
+    @AppStorage(DistanceUnit.storageKey) private var unit = DistanceUnit.miles
 
     private var homeBase: Place? {
         places.first(where: \.isHomeBase)
@@ -11,6 +12,19 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Distance", selection: $unit) {
+                        ForEach(DistanceUnit.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("Units")
+                } footer: {
+                    Text("Rates are shown per \(unit.abbreviation) to match.")
+                }
+
                 Section {
                     if places.isEmpty {
                         Text("Add an address first, on the Addresses tab.")

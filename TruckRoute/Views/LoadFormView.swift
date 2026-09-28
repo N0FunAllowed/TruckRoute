@@ -12,12 +12,56 @@ struct LoadFormView: View {
     @State private var pickup: Place?
     @State private var dropoff: Place?
     @State private var pickupDate = Date.now
+    @State private var hasPickupWindowEnd = false
+    @State private var pickupWindowEnd = Date.now
+
     @State private var hasDeliveryDate = false
     @State private var deliveryDate = Date.now
+    @State private var hasDeliveryWindow = false
+    @State private var deliveryWindowStart = Date.now
+    @State private var deliveryWindowEnd = Date.now
+
+    @State private var serviceDurationMinutes = Load.defaultServiceDurationMinutes
     @State private var notes = ""
     @State private var rateText = ""
 
-    private var canSave: Bool { pickup != nil && dropoff != nil }
+    /// `onAppear` fires again every time the place picker pops back to this
+    /// form. Reloading the stored load then would throw away the place just
+    /// picked, along with every other unsaved edit, so it only happens once.
+    @State private var hasLoadedExisting = false
+
+    private var canSave: Bool {
+        pickup != nil && dropoff != nil && scheduleError == nil && rateError == nil
+    }
+
+    /// Something was typed in the rate field but it isn't a number. Saving
+    /// used to quietly store no rate at all.
+    private var rateError: String? {
+        guard !rateText.trimmed.isEmpty, MoneyInput.parse(rateText) == nil else { return nil }
+        return "Rate isn't a number."
+    }
+
+    /// Concise, in-form validation for the handful of ways this schedule can
+    /// contradict itself. Nil means the schedule is fine to save.
+    private var scheduleError: String? {
+        if hasPickupWindowEnd && pickupWindowEnd <= pickupDate {
+            return "Pickup window must end after it starts."
+        }
+        if hasDeliveryWindow {
+            if deliveryWindowEnd <= deliveryWindowStart {
+                return "Delivery window must end after it starts."
+            }
+            if deliveryWindowStart < pickupDate {
+                return "Delivery window can't start before pickup."
+            }
+            if hasDeliveryDate && deliveryWindowEnd > deliveryDate {
+                return "Delivery window ends after the delivery deadline."
+            }
+        } else if hasDeliveryDate && deliveryDate < pickupDate {
+            return "Delivery deadline is before pickup."
+        }
+        return nil
+    }
 
     var body: some View {
         NavigationStack {
@@ -35,17 +79,63 @@ struct LoadFormView: View {
                     }
                 }
 
-                Section("Schedule") {
-                    DatePicker("Pickup", selection: $pickupDate)
+                if let pickup, pickup === dropoff {
+                    Section {
+                        Label("Pickup and drop-off are the same address.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                Section {
+                    DatePicker("Pickup opens", selection: $pickupDate)
+                    Toggle("Pickup window closes", isOn: $hasPickupWindowEnd.animation())
+                    if hasPickupWindowEnd {
+                        DatePicker("Closes", selection: $pickupWindowEnd)
+                    }
+                    Stepper(
+                        "Time on site: \(serviceDurationMinutes) min",
+                        value: $serviceDurationMinutes,
+                        in: 0...480,
+                        step: 15
+                    )
+                } header: {
+                    Text("Pickup")
+                } footer: {
+                    Text("Arriving before the window opens just means waiting for it.")
+                }
+
+                Section {
+                    Toggle("Delivery window", isOn: $hasDeliveryWindow.animation())
+                    if hasDeliveryWindow {
+                        DatePicker("Opens", selection: $deliveryWindowStart)
+                        DatePicker("Closes", selection: $deliveryWindowEnd)
+                    }
                     Toggle("Delivery deadline", isOn: $hasDeliveryDate.animation())
                     if hasDeliveryDate {
                         DatePicker("Deliver by", selection: $deliveryDate)
+                    }
+                } header: {
+                    Text("Delivery")
+                } footer: {
+                    Text(hasDeliveryWindow
+                        ? "The window is when the drop-off will actually accept the load; the deadline below is the hard cutoff."
+                        : "A deadline alone is enough for most loads — add a window only if the drop-off also has fixed hours.")
+                }
+
+                if let scheduleError {
+                    Section {
+                        Label(scheduleError, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
                     }
                 }
 
                 Section {
                     TextField("Rate", text: $rateText)
                         .keyboardType(.decimalPad)
+                    if let rateError {
+                        Label(rateError, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
                 } header: {
                     Text("Pay")
                 } footer: {
@@ -83,22 +173,35 @@ struct LoadFormView: View {
     }
 
     private func loadExisting() {
-        guard let load else { return }
+        guard let load, !hasLoadedExisting else { return }
+        hasLoadedExisting = true
         reference = load.reference
         pickup = load.pickup
         dropoff = load.dropoff
         pickupDate = load.pickupDate
         notes = load.notes
+        serviceDurationMinutes = load.serviceDurationMinutes
         if let rate = load.rate {
-            rateText = rate.formatted(.number.precision(.fractionLength(0...2)))
+            rateText = MoneyInput.text(for: rate)
+        }
+        if let windowEnd = load.pickupWindowEnd {
+            hasPickupWindowEnd = true
+            pickupWindowEnd = windowEnd
         }
         if let delivery = load.deliveryDate {
             hasDeliveryDate = true
             deliveryDate = delivery
         }
+        if let start = load.deliveryWindowStart, let end = load.deliveryWindowEnd {
+            hasDeliveryWindow = true
+            deliveryWindowStart = start
+            deliveryWindowEnd = end
+        }
     }
 
     private func save() {
+        guard canSave else { return }
+
         let target = load ?? {
             let new = Load()
             context.insert(new)
@@ -109,11 +212,13 @@ struct LoadFormView: View {
         target.pickup = pickup
         target.dropoff = dropoff
         target.pickupDate = pickupDate
+        target.pickupWindowEnd = hasPickupWindowEnd ? pickupWindowEnd : nil
         target.deliveryDate = hasDeliveryDate ? deliveryDate : nil
+        target.deliveryWindowStart = hasDeliveryWindow ? deliveryWindowStart : nil
+        target.deliveryWindowEnd = hasDeliveryWindow ? deliveryWindowEnd : nil
+        target.serviceDurationMinutes = serviceDurationMinutes
         target.notes = notes
-        // Tolerate "$2,400" and the like.
-        let digits = rateText.filter { $0.isNumber || $0 == "." }
-        target.rate = digits.isEmpty ? nil : Double(digits)
+        target.rate = MoneyInput.parse(rateText)
 
         dismiss()
     }

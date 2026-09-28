@@ -11,6 +11,12 @@ final class RoutePlanner {
     private(set) var progressNote: String?
     private(set) var errorMessage: String?
 
+    private let coordinateResolver: LoadCoordinateResolver
+
+    init(coordinateResolver: LoadCoordinateResolver = .live) {
+        self.coordinateResolver = coordinateResolver
+    }
+
     /// Orders the week's loads and measures each leg.
     ///
     /// Loads are grouped by pickup day so the truck never runs a Friday load on
@@ -35,7 +41,7 @@ final class RoutePlanner {
         progressNote = "Looking up addresses…"
         let start: CLLocationCoordinate2D
         do {
-            start = try await resolveCoordinate(for: homeBase)
+            start = try await coordinateResolver.resolve(homeBase)
         } catch {
             errorMessage = "Couldn't find the address for \(homeBase.displayName), your home base."
             return
@@ -55,8 +61,8 @@ final class RoutePlanner {
             do {
                 routable.append((
                     load,
-                    try await resolveCoordinate(for: pickup),
-                    try await resolveCoordinate(for: dropoff)
+                    try await coordinateResolver.resolve(pickup),
+                    try await coordinateResolver.resolve(dropoff)
                 ))
             } catch {
                 skipped.append(SkippedLoad(
@@ -97,7 +103,10 @@ final class RoutePlanner {
                     coordinate: entry.pickup,
                     loadReference: entry.load.displayName,
                     day: day,
-                    loadRate: entry.load.rate
+                    loadRate: entry.load.rate,
+                    windowStart: entry.load.pickupDate,
+                    deadline: entry.load.pickupWindowEnd,
+                    serviceDurationMinutes: entry.load.serviceDurationMinutes
                 ))
                 stops.append(RouteStop(
                     kind: .dropoff,
@@ -106,7 +115,10 @@ final class RoutePlanner {
                     coordinate: entry.dropoff,
                     loadReference: entry.load.displayName,
                     day: day,
-                    loadRate: entry.load.rate
+                    loadRate: entry.load.rate,
+                    windowStart: entry.load.deliveryWindowStart,
+                    deadline: entry.load.deliveryWindowEnd ?? entry.load.deliveryDate,
+                    serviceDurationMinutes: entry.load.serviceDurationMinutes
                 ))
                 current = entry.dropoff
             }
@@ -135,13 +147,8 @@ final class RoutePlanner {
         errorMessage = nil
     }
 
-    /// Geocodes a place once and caches the result on it, so replanning and
-    /// other loads using the same place cost nothing.
-    private func resolveCoordinate(for place: Place) async throws -> CLLocationCoordinate2D {
-        if let cached = place.coordinate { return cached }
-        let coordinate = try await GeocodingService.shared.coordinate(for: place.address)
-        place.coordinate = coordinate
-        return coordinate
+    func dismissError() {
+        errorMessage = nil
     }
 
     /// Fills in drive time, distance and the drawable polyline for each leg.
@@ -154,16 +161,10 @@ final class RoutePlanner {
         for index in working.stops.indices.dropFirst() {
             progressNote = "Measuring leg \(index) of \(working.stops.count - 1)…"
 
-            let request = MKDirections.Request()
-            request.source = MKMapItem(
-                placemark: MKPlacemark(coordinate: working.stops[index - 1].coordinate)
-            )
-            request.destination = MKMapItem(
-                placemark: MKPlacemark(coordinate: working.stops[index].coordinate)
-            )
-            request.transportType = .automobile
-
-            if let leg = try? await MKDirections(request: request).calculate().routes.first {
+            if let leg = await drivingRoute(
+                from: working.stops[index - 1].coordinate,
+                to: working.stops[index].coordinate
+            ) {
                 working.stops[index].travelTime = leg.expectedTravelTime
                 working.stops[index].distance = leg.distance
                 working.stops[index].polyline = leg.polyline
@@ -171,15 +172,33 @@ final class RoutePlanner {
             route = working
         }
 
-        // A load's miles are the empty run to its pickup plus the loaded run to
-        // its drop-off. Stops are built pickup-then-drop-off, so the leg before
-        // a drop-off is always that load's deadhead.
-        for index in working.stops.indices where working.stops[index].kind == .dropoff {
-            let loaded = working.stops[index].distance ?? 0
-            let empty = index > 0 ? (working.stops[index - 1].distance ?? 0) : 0
-            working.stops[index].allMiles = loaded + empty
-        }
+        working.assignLoadMiles()
+        working.stops = RouteScheduler.schedule(working.stops)
         route = working
+    }
+
+    /// MapKit throttles directions requests and starts refusing them when they
+    /// come back to back, which would silently drop legs and understate both
+    /// the miles and the rate per mile. Space them out, and give a refused
+    /// request one more try before giving up on the leg.
+    private func drivingRoute(
+        from source: CLLocationCoordinate2D,
+        to destination: CLLocationCoordinate2D
+    ) async -> MKRoute? {
+        for attempt in 0..<2 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .seconds(1))
+            }
+            let request = MKDirections.Request()
+            request.source = MKMapItem(placemark: MKPlacemark(coordinate: source))
+            request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
+            request.transportType = .automobile
+
+            if let leg = try? await MKDirections(request: request).calculate().routes.first {
+                return leg
+            }
+        }
+        return nil
     }
 
     private func distance(
