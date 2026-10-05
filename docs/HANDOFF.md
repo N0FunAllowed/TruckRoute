@@ -1,6 +1,6 @@
 # TruckRoute — session handoff
 
-Verified live against GitHub and the local checkout on **2026-09-28**.
+Verified live against GitHub and the local checkout on **2026-10-05**.
 
 ## What this is
 
@@ -28,15 +28,15 @@ It arrived via an unrelated merge (PR #3, an "AI dev router") partway through, a
 
 ## Where things stand
 
-**Branch:** `claude/trucking-app-routing-prompt-5ckvae` · **PR #9** · head `1227d8a` · base `master` at `2c70673`
-**CI:** green on both runs for `1227d8a` — **44 tests, 0 failures**, `** TEST SUCCEEDED **`, no Swift compiler warnings
-**Mergeability:** GitHub reports `blocked` — that's the review requirement, *not* a conflict; `master` hasn't moved since the PR opened.
+**Branch:** `claude/trucking-app-routing-prompt-5ckvae` · **PR #9** · base `master`
+**CI:** **53 tests, 0 failures**, plus a Release build for arm64 device
+**Default branch is `master`, not `main`** — worth knowing before anyone goes looking for it.
 
-PR #9 is the whole app. It has now had **two independent reviews**, and the fixes from the second one are merged into its branch via PR #10 (merged 2026-09-28). What it is still waiting on:
+PR #9 is the whole app. It has had **two independent reviews**; the second one's fixes landed via PR #10 (merged into this branch 2026-09-28), and five of the six decisions it left open were closed on 2026-10-05 in the TestFlight-readiness round. What it is still waiting on:
 
-1. **A review of the PR #10 fixes.** The Claude session that reviewed #9 also wrote those fixes, so the review requirement is not met by its author. This is explicitly flagged in #10's body.
-2. **Simulator/device QA.** Still never done — see below.
-3. **Six open decisions** the second review deliberately left to the owner (below).
+1. **An independent review of the PR #10 fixes and the 2026-10-05 round.** Neither has had one. The session that reviewed #9 also wrote the #10 fixes.
+2. **Simulator/device QA.** Still never done — see below. This is the one that matters.
+3. **One open design decision**, the unknown-schedule asymmetry (below).
 
 ### Review history
 
@@ -52,22 +52,31 @@ PR #9 is the whole app. It has now had **two independent reviews**, and the fixe
 - **Medium — SwiftData `Place` written off the main thread** (`0afbfc0`). Under SE-0338 a plain `async` method runs on the generic executor even when a `@MainActor` caller awaits it, so the resolver read and wrote `Place.latitude/longitude` from a background thread — a latent race that would surface only as an occasional crash. The resolving methods are now `@MainActor`.
 - **Low** — `isDelivered` got its inline migration default; "Check this address" no longer applies a lookup result if the text changed meanwhile; the PDF route sheet now prints the load reference.
 
-### Six open decisions from the second review — not changed, deliberately
+### The second review's six decisions — five closed on 2026-10-05
 
-1. **Same-day ordering ignores pickup times.** Nearest-neighbor will take a 14:00 pickup near the yard before an 08:00 pickup further out, wait six hours, then run the 08:00 load that evening; it's only flagged if that load has a window close. Now that the scheduler knows windows, a cheap fix is "earliest-open first, nearest-neighbor among loads already open when the truck is free." Left alone as an algorithm and product call for the planning role under `config/router.json`.
-2. **The unknown-schedule question is now visibly asymmetric.** After fix 1, a *known* overrun carries into the next day, but an *unknown* one is still assumed to finish by 08:00. The reviewer would keep the recovery — propagating would let one unmeasured Monday leg blank the whole week, and both the unknown stop and the missing leg are already flagged — but it deserves a deliberate yes. Pinned by `testANewOperatingDayRecoversFromAnEarlierMissingLeg`, which the code comment points at.
-3. **The route goes stale silently.** After loads are edited, delivered or deleted, the Route tab keeps the old plan with nothing saying so. A "loads changed since this was planned" line next to Replan would cover it.
-4. **The delete buttons inside the Load and Place edit forms skip the confirmation** the list swipe has. The Place one also bypasses the home-base and "N loads use this address" warnings.
-5. **MapKit throttling.** Directions allows roughly 50 requests a minute; a 25-load week is about 51 legs. The 1-second retry can't outlast a per-minute window. It fails visibly (unmeasured-leg warnings) rather than silently. The `drivingRoute` comment claims requests are spaced out, but only retries are.
-6. **The map doesn't re-fit on Replan**, because `Map(initialPosition:)` only applies on first appearance.
+1. **Same-day ordering ignored pickup times** — closed. Nearest-neighbor took a 14:00 pickup near the yard before an 08:00 pickup further out, idled six hours, then ran the 08:00 load that evening. Ordering now lives in `RouteOrdering`, pure and testable alongside `RouteScheduler`: earlier opening first, distance breaking ties among pickups opening in the same hour. The hour rounding is deliberate and is the part to argue with — the review wanted "nearest-neighbor among loads already open when the truck is free", which needs travel times the ordering step doesn't have yet.
+2. **The route went stale silently** — closed. The Route tab compares a fingerprint of the loads and yard against what was planned, says so, and offers Replan, while keeping the old plan on screen.
+3. **The delete buttons inside the edit forms skipped confirmation** — closed. Both confirm now, and the address form shows the same home-base and "N loads use this" warning; that warning moved onto `Place` so the two call sites can't drift.
+4. **The map didn't re-fit on Replan** — closed. The camera is `@State`, re-fitted when the stop list changes identity rather than on every update (measuring republishes once per leg).
+5. **MapKit throttling** — closed, and it changes how planning feels. `drivingRoute` only ever slept between *retries* despite a comment claiming otherwise, so a 25-load week's 51 legs ran straight into the roughly-50-a-minute ceiling and legs went silently unmeasured. Paced 1.25s apart now, which makes planning a big week take about a minute.
 
-Nits: the PDF's "Generated" time is captured when the Route view renders, not when you share; turning on a window or deadline defaults it to *now*, which any future load shows as an error until changed.
+The nits went with them: the PDF is stamped when it's exported rather than when the Route tab last redrew, and turning on a window or deadline seeds from the pickup instead of *now* (which on any future load was before the pickup, so the form opened onto a validation error).
+
+**Still open — the one that is a judgement call, not a bug:**
+
+6. **The unknown-schedule question is asymmetric.** A *known* overrun carries into the next day, but an *unknown* one is still assumed to finish by 08:00. Keeping the recovery is defensible — propagating would let one unmeasured Monday leg blank the whole week, and both the unknown stop and the missing leg are already flagged — but it deserves a deliberate yes. Pinned by `testANewOperatingDayRecoversFromAnEarlierMissingLeg`, which the code comment points at.
+
+### Shipping
+
+`docs/TESTFLIGHT.md` is the runbook. What was wrong before 2026-10-05, none of it visible from a simulator build: the bundle ID was `com.example.TruckRoute`, which Apple will not let you register; there was no asset catalog at all, so no app icon, which App Store Connect rejects; and export compliance was unanswered, so TestFlight would ask on every build. All three are fixed. The one thing that can't be set from this side is `DEVELOPMENT_TEAM`.
+
+CI now also builds Release for arm64 device, not just Debug for a simulator — an archive can fail where a simulator build succeeds.
 
 ### Other open PRs and issues
 
 | PR | What | State |
 |---|---|---|
-| **#9** | The app itself | Green at `1227d8a`; needs a review of the #10 fixes + QA |
+| **#9** | The app itself | Green; needs a review of the #10 and 2026-10-05 rounds, and QA |
 | **#6** | `feature/load-expenses` — per-load cost/profit (issue #5, built by Codex) | Open, off `master`, **conflicts with #9** |
 | **#8** | `infra/use-shared-ai-workflows` | Open, untouched |
 
@@ -79,32 +88,33 @@ Nits: the PDF's "Generated" time is captured when the Route view renders, not wh
 
 - **`Place`** — address book. Apple Maps autocomplete confirms an address is real before saving; the confirmed coordinate is cached on the place and cleared when the address is edited.
 - **`Load`** — pickup/drop-off chosen from the address book, pickup date + optional window close, optional delivery window and/or deadline, on-site service time, rate (via `MoneyInput`), reference, notes, delivered flag. The form blocks self-contradicting schedules and non-numeric rates.
-- **`RoutePlanner`** (`@MainActor @Observable`) — groups loads by pickup day, orders each day nearest-neighbor from the yard, measures each leg with MapKit (one retry against throttling), closes the loop with a return-to-yard deadhead leg, then hands the stops to the scheduler.
+- **`RoutePlanner`** (`@MainActor @Observable`) — groups loads by pickup day, hands each day to `RouteOrdering`, measures each leg with MapKit (paced 1.25s apart, one retry), closes the loop with a return-to-yard deadhead leg, then hands the stops to the scheduler. Also publishes `plannedSignature`, the fingerprint the Route tab uses to notice it has gone stale.
+- **`RouteOrdering`** — pure, synchronous, no MapKit. Decides what order a day's loads are worked in: earlier opening first, distance breaking ties within the hour.
 - **`RouteScheduler`** — pure, synchronous, no MapKit or network. Arrival/departure per stop from travel time, windows and service duration; a day starts at the later of 08:00 and the previous day's last departure; early arrival waits; past-deadline stops flagged. The piece worth testing directly and the one that's had the most bugs.
 - **`LoadCoordinateResolver`** — `@MainActor`; resolves coordinates from a place's *current* address, geocoder injected for tests.
 - **`RoutePDFRenderer` + `RouteShareDocument`** — paginated route-sheet PDF via `UIGraphicsPDFRenderer`, shared through `ShareLink` with a timestamped, collision-proof filename.
 - **Money** — rate per mile/km over *all* miles (loaded + empty), nil for a load with an unmeasured leg, deadhead surfaced explicitly and dashed on the map, miles/km toggle in Settings driving both distances and rate labels.
 
-**Tests (44, all without MapKit or network):** `RouteSchedulerTests` 16 (pinned to a fixed UTC calendar and base date so absolute-time assertions can't flake on DST or a midnight rollover), `PlannedRouteTests` 14, `LoadCoordinateResolverTests` 6, `MoneyInputTests` 5 (locale round trips), `FormatTests` 3.
+**Tests (53, all without MapKit or network):** `RouteSchedulerTests` 16 (pinned to a fixed UTC calendar and base date so absolute-time assertions can't flake on DST or a midnight rollover), `PlannedRouteTests` 14, `RouteOrderingTests` 9 (same fixed calendar), `LoadCoordinateResolverTests` 6, `MoneyInputTests` 5 (locale round trips), `FormatTests` 3.
 
 ## Things worth knowing, not just facts
 
 - **The scheduler is where the bugs live.** Five real ones so far: travel time skipped on a day's first stop (`if`/`else if`); the operating day derived from a mutable clock, which broke past midnight; the inverse facet of that, where a genuine new day failed to reset; an unmeasured MapKit leg treated as zero travel time, so stops read "on time" when arrival was unknown; and a new day resetting to 08:00 even when the previous day's work ran past it. Not one was caught by casually reading the code — two by CI, three by review passes that went looking. Treat changes there with suspicion and add tests.
 - **Reading found what CI never could.** The `onAppear` data loss, the off-main-actor SwiftData write and the address-lookup race were all found by reading, and none of them has a test. CI proves compilation and math; it cannot see a SwiftUI lifecycle bug or a data race.
-- **Nothing has ever been run on a simulator or device. Not once.** This is the single biggest gap and the highest-value next step. When it happens, the reviews specifically want: edit an existing load and change its drop-off; set the region to Germany and re-save a load that has a rate; plan a week where a drop-off opens the day after its pickup.
+- **Nothing has ever been run on a simulator or device. Not once.** This is the single biggest gap and the highest-value next step. `docs/TESTFLIGHT.md` lists the six things to drive first, each one a bug fixed by reading rather than by running — so each is unconfirmed in exactly the way a human driving the app would confirm.
 - The regression tests are confirmed by CI to *pass* against the fixes. That they *fail* against the old code was established by reading the old logic, not by running it.
 
 ## Conventions
 
 - Commit messages explain *why*, often several sentences, and end with the Co-Authored-By and Claude-Session trailers the harness specifies.
-- Push only to `claude/trucking-app-routing-prompt-5ckvae`. Don't open PRs unless asked. **Don't merge.** Surface risky or irreversible things before doing them.
+- Push only to `claude/trucking-app-routing-prompt-5ckvae`. Don't open PRs unless asked. Surface risky or irreversible things before doing them. The repo's `CLAUDE.md` and `config/router.json` (`never_auto_merge: true`) say merges are the owner's call — when one happens it's because they asked for it in so many words.
 - **The branch moves between sessions.** PR #10 was merged into it by another session while this doc was being written. Fetch before assuming a head SHA, and rebase rather than force-push.
 - The owner values honesty about what's verified vs. assumed and has responded well to flagged uncertainty — that's why the caveats above are phrased the way they are.
 
 ## Likely next steps, in order
 
-1. **Simulator/device QA of PR #9** — needs a Mac with Xcode, which this environment is not. The three scenarios above are the priority.
-2. **An independent review of the PR #10 fixes**, by a human or a different model. Its author wrote both the review and the fixes.
-3. **Work the six open decisions** above, at least items 1 and 2, which are product calls rather than bugs.
-4. **Merge #9, then rework #6 on top** — note the merge that git calls clean but that won't compile.
+1. **Run it.** Simulator or device, following `docs/TESTFLIGHT.md`'s list. Needs a Mac with Xcode, which this environment is not. Everything else is downstream of this.
+2. **An independent review** of the PR #10 fixes and the 2026-10-05 round, by a human or a different model. Neither has had one.
+3. **Decide the unknown-schedule asymmetry** — the one open design question.
+4. **Rework #6 on top of `master`** once #9 is in — note the merge that git calls clean but that won't compile.
 5. Issue #7 (automated Claude review workflow) is unstarted and wants a security review first.
