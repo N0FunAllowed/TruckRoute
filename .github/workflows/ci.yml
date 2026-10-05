@@ -41,3 +41,20 @@ jobs:
             -configuration Debug \
             -destination "id=${SIMULATOR_UDID}" \
             CODE_SIGNING_ALLOWED=NO
+
+      # The step above only proves the app builds Debug for a simulator, which
+      # is not what shipping does. An archive builds Release for arm64 device,
+      # where whole-module optimisation and the device SDK can both fail on
+      # code a simulator build accepts. Signing stays off so this needs no
+      # credentials — it checks the compile, not the upload.
+      - name: Build Release for device
+        run: |
+          xcodebuild build \
+            -project TruckRoute.xcodeproj \
+            -scheme TruckRoute \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
