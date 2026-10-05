@@ -11,6 +11,12 @@ struct PlaceFormView: View {
     @Environment(\.modelContext) private var context
     @Environment(\.dismiss) private var dismiss
 
+    /// Only so deleting from here can warn about what's using this address,
+    /// exactly as deleting from the list does.
+    @Query private var loads: [Load]
+
+    @State private var isConfirmingDelete = false
+
     @State private var name = ""
     @State private var address = ""
     @State private var notes = ""
@@ -73,11 +79,10 @@ struct PlaceFormView: View {
                         .lineLimit(3...)
                 }
 
-                if let place {
+                if place != nil {
                     Section {
                         Button("Delete address", role: .destructive) {
-                            context.delete(place)
-                            dismiss()
+                            isConfirmingDelete = true
                         }
                     }
                 }
@@ -93,6 +98,24 @@ struct PlaceFormView: View {
                 }
             }
             .onAppear(perform: loadExisting)
+            // Deleting from the list asks first and says what's using the
+            // address; deleting from here used to do neither.
+            .confirmationDialog(
+                place.map { "Delete \($0.displayName)?" } ?? "",
+                isPresented: $isConfirmingDelete,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let place {
+                        context.delete(place)
+                    }
+                    dismiss()
+                }
+            } message: {
+                if let place {
+                    Text(place.deletionWarning(among: loads))
+                }
+            }
         }
     }
 

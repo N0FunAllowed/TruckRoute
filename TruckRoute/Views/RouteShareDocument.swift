@@ -10,13 +10,21 @@ import UniformTypeIdentifiers
 struct RouteShareDocument: Transferable {
     let route: PlannedRoute
     let unit: DistanceUnit
-    let generatedAt: Date
 
-    init(route: PlannedRoute, unit: DistanceUnit, generatedAt: Date = .now) {
+    /// Set only by tests that need a fixed timestamp. Left nil in the app so
+    /// the sheet is stamped when it's actually exported: `ShareLink` rebuilds
+    /// this value on every view update, so capturing `.now` here would print
+    /// whenever the Route tab last redrew, which can be a long time before
+    /// anyone taps Share.
+    private let pinnedDate: Date?
+
+    init(route: PlannedRoute, unit: DistanceUnit, generatedAt: Date? = nil) {
         self.route = route
         self.unit = unit
-        self.generatedAt = generatedAt
+        self.pinnedDate = generatedAt
     }
+
+    var generatedAt: Date { pinnedDate ?? .now }
 
     static var transferRepresentation: some TransferRepresentation {
         DataRepresentation(exportedContentType: .pdf) { document in

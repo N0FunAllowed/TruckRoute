@@ -18,6 +18,14 @@ struct RouteView: View {
         allLoads.filter { !$0.isDelivered }
     }
 
+    /// The board has moved on since this route was planned. The old plan stays
+    /// on screen — it's still the last honest answer, and throwing it away
+    /// mid-week would be worse — but it stops presenting itself as current.
+    private var isStale: Bool {
+        guard let planned = planner.plannedSignature, let homeBase else { return false }
+        return planned != RoutePlanner.signature(loads: loads, homeBase: homeBase)
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -88,6 +96,24 @@ struct RouteView: View {
 
     private func routeDetail(_ route: PlannedRoute) -> some View {
         List {
+            if isStale {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Loads have changed since this was planned", systemImage: "exclamationmark.arrow.circlepath")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text("The stops and times below are from the earlier plan.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Replan now", action: planRoute)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(planner.isPlanning)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
             Section {
                 RouteMapView(stops: route.stops)
                     .frame(height: 260)

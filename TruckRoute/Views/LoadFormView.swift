@@ -30,6 +30,8 @@ struct LoadFormView: View {
     /// picked, along with every other unsaved edit, so it only happens once.
     @State private var hasLoadedExisting = false
 
+    @State private var isConfirmingDelete = false
+
     private var canSave: Bool {
         pickup != nil && dropoff != nil && scheduleError == nil && rateError == nil
     }
@@ -149,11 +151,10 @@ struct LoadFormView: View {
                         .lineLimit(3...)
                 }
 
-                if let load {
+                if load != nil {
                     Section {
                         Button("Delete load", role: .destructive) {
-                            context.delete(load)
-                            dismiss()
+                            isConfirmingDelete = true
                         }
                     }
                 }
@@ -169,7 +170,55 @@ struct LoadFormView: View {
                 }
             }
             .onAppear(perform: loadExisting)
+            // Deleting from the list asks first; deleting from here used to
+            // not, even though it's the same irreversible thing.
+            .confirmationDialog(
+                load.map { "Delete \($0.displayName)?" } ?? "",
+                isPresented: $isConfirmingDelete,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let load {
+                        context.delete(load)
+                    }
+                    dismiss()
+                }
+            }
+            // Turning a window or deadline on used to seed it with "now",
+            // which on any load more than a moment out is before the pickup —
+            // so the form opened straight onto a validation error the user
+            // had to clear by hand. Seed from the pickup instead, and only
+            // when what's there doesn't already make sense.
+            .onChange(of: hasPickupWindowEnd) { seedPickupWindow() }
+            .onChange(of: hasDeliveryWindow) { seedDeliveryWindow() }
+            .onChange(of: hasDeliveryDate) { seedDeliveryDeadline() }
         }
+    }
+
+    private func seedPickupWindow() {
+        guard hasPickupWindowEnd, pickupWindowEnd <= pickupDate else { return }
+        pickupWindowEnd = pickupDate.addingTimeInterval(2 * 3600)
+    }
+
+    private func seedDeliveryWindow() {
+        guard hasDeliveryWindow else { return }
+        if deliveryWindowStart < pickupDate {
+            deliveryWindowStart = pickupDate.addingTimeInterval(4 * 3600)
+        }
+        if deliveryWindowEnd <= deliveryWindowStart {
+            deliveryWindowEnd = deliveryWindowStart.addingTimeInterval(4 * 3600)
+        }
+        // Adding a window can push past a deadline that was fine without one.
+        seedDeliveryDeadline()
+    }
+
+    private func seedDeliveryDeadline() {
+        guard hasDeliveryDate else { return }
+        // A window, where there is one, is the tighter constraint: the deadline
+        // is the hard cutoff, so it can't land before the window closes.
+        let floor = hasDeliveryWindow ? deliveryWindowEnd : pickupDate
+        guard deliveryDate < floor else { return }
+        deliveryDate = floor.addingTimeInterval(8 * 3600)
     }
 
     private func loadExisting() {
