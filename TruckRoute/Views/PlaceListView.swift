@@ -41,12 +41,7 @@ struct PlaceListView: View {
             ) { place in
                 Button("Delete", role: .destructive) { context.delete(place) }
             } message: { place in
-                let count = loadsUsing(place)
-                Text(
-                    count == 0
-                        ? "Nothing is using this address."
-                        : "\(count) load\(count == 1 ? "" : "s") use this address and will be left without one."
-                )
+                Text(place.deletionWarning(among: loads))
             }
         }
     }
@@ -65,10 +60,6 @@ struct PlaceListView: View {
                 }
             }
         }
-    }
-
-    private func loadsUsing(_ place: Place) -> Int {
-        loads.filter { $0.pickup === place || $0.dropoff === place }.count
     }
 }
 

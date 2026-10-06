@@ -3,12 +3,27 @@ import SwiftData
 import MapKit
 
 struct RouteView: View {
-    @Query(sort: \Load.pickupDate) private var loads: [Load]
+    @Query(sort: \Load.pickupDate) private var allLoads: [Load]
     @Query private var places: [Place]
+    @AppStorage(DistanceUnit.storageKey) private var unit = DistanceUnit.miles
     @State private var planner = RoutePlanner()
 
     private var homeBase: Place? {
         places.first(where: \.isHomeBase)
+    }
+
+    /// Delivered loads are done; routing only what's still outstanding is what
+    /// keeps replanning meaningful as loads pile up over time.
+    private var loads: [Load] {
+        allLoads.filter { !$0.isDelivered }
+    }
+
+    /// The board has moved on since this route was planned. The old plan stays
+    /// on screen — it's still the last honest answer, and throwing it away
+    /// mid-week would be worse — but it stops presenting itself as current.
+    private var isStale: Bool {
+        guard let planned = planner.plannedSignature, let homeBase else { return false }
+        return planned != RoutePlanner.signature(loads: loads, homeBase: homeBase)
     }
 
     var body: some View {
@@ -41,6 +56,16 @@ struct RouteView: View {
             }
             .navigationTitle("Route")
             .toolbar {
+                if let route = planner.route, !route.stops.isEmpty {
+                    ToolbarItem(placement: .primaryAction) {
+                        ShareLink(
+                            item: RouteShareDocument(route: route, unit: unit),
+                            preview: SharePreview("Route sheet")
+                        ) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
                 if planner.route != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button("Replan", systemImage: "arrow.clockwise", action: planRoute)
@@ -57,9 +82,12 @@ struct RouteView: View {
             }
             .alert(
                 "Couldn't plan the route",
-                isPresented: .constant(planner.errorMessage != nil)
+                isPresented: Binding(
+                    get: { planner.errorMessage != nil },
+                    set: { if !$0 { planner.dismissError() } }
+                )
             ) {
-                Button("OK") { planner.clear() }
+                Button("OK") { }
             } message: {
                 Text(planner.errorMessage ?? "")
             }
@@ -68,6 +96,24 @@ struct RouteView: View {
 
     private func routeDetail(_ route: PlannedRoute) -> some View {
         List {
+            if isStale {
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Loads have changed since this was planned", systemImage: "exclamationmark.arrow.circlepath")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text("The stops and times below are from the earlier plan.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Replan now", action: planRoute)
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(planner.isPlanning)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
             Section {
                 RouteMapView(stops: route.stops)
                     .frame(height: 260)
@@ -76,12 +122,12 @@ struct RouteView: View {
 
             Section {
                 ForEach(Array(route.stops.enumerated()), id: \.element.id) { index, stop in
-                    RouteStopRow(index: index, stop: stop)
+                    RouteStopRow(index: index, stop: stop, unit: unit)
                 }
             } header: {
                 Text("\(route.workingStopCount) stops")
             } footer: {
-                RouteSummary(route: route)
+                RouteSummary(route: route, unit: unit)
             }
 
             if !route.skipped.isEmpty {
@@ -107,16 +153,25 @@ struct RouteView: View {
 
 private struct RouteSummary: View {
     let route: PlannedRoute
+    let unit: DistanceUnit
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("\(Format.miles(route.totalDistance)) · \(Format.duration(route.totalTravelTime)) driving")
+            Text("\(Format.distance(route.totalDistance, in: unit)) · \(Format.duration(route.totalTravelTime)) driving")
             if route.emptyDistance > 0, let share = route.deadheadShare {
-                Text("\(Format.miles(route.loadedDistance)) loaded · \(Format.miles(route.emptyDistance)) empty (\(Format.percent(share)) deadhead)")
+                Text("\(Format.distance(route.loadedDistance, in: unit)) loaded · \(Format.distance(route.emptyDistance, in: unit)) empty (\(Format.percent(share)) deadhead)")
             }
-            if let total = route.totalRate, let perMile = route.ratePerMile {
-                Text("\(Format.money(total)) · \(Format.perMile(perMile)) all miles")
+            if let total = route.totalRate, let perUnit = route.rate(per: unit) {
+                Text("\(Format.money(total)) · \(Format.rate(perUnit, per: unit)) loaded + empty")
                     .fontWeight(.semibold)
+            }
+            if route.unmeasuredLegs > 0 {
+                Text("\(route.unmeasuredLegs) leg\(route.unmeasuredLegs == 1 ? "" : "s") couldn't be measured, so these totals are low.")
+                    .foregroundStyle(.orange)
+            }
+            if route.stopsWithUnknownSchedule > 0 {
+                Text("\(route.stopsWithUnknownSchedule) stop\(route.stopsWithUnknownSchedule == 1 ? "" : "s") have no arrival time, because the drive to them couldn't be measured.")
+                    .foregroundStyle(.orange)
             }
         }
     }
@@ -125,6 +180,7 @@ private struct RouteSummary: View {
 private struct RouteStopRow: View {
     let index: Int
     let stop: RouteStop
+    let unit: DistanceUnit
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -132,9 +188,9 @@ private struct RouteStopRow: View {
                 HStack(spacing: 4) {
                     if stop.isDeadheadLeg {
                         Image(systemName: "arrow.right.to.line")
-                        Text("Empty \(Format.miles(distance)) · \(Format.duration(travelTime))")
+                        Text("Empty \(Format.distance(distance, in: unit)) · \(Format.duration(travelTime))")
                     } else {
-                        Text("Loaded \(Format.miles(distance)) · \(Format.duration(travelTime))")
+                        Text("Loaded \(Format.distance(distance, in: unit)) · \(Format.duration(travelTime))")
                     }
                 }
                 .font(.caption)
@@ -165,8 +221,20 @@ private struct RouteStopRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if stop.hasUnknownSchedule {
+                        Label("Arrival unknown — drive time unavailable", systemImage: "questionmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if let arrival = stop.scheduledArrival {
+                        Label(
+                            Format.time(arrival, listedUnder: stop.day),
+                            systemImage: stop.isLate ? "exclamationmark.triangle.fill" : "clock"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(stop.isLate ? Color.red : Color.secondary)
+                    }
                     if let rate = stop.loadRate, stop.kind == .dropoff {
-                        Text(stop.ratePerMile.map { "\(Format.money(rate)) · \(Format.perMile($0))" }
+                        Text(stop.rate(per: unit).map { "\(Format.money(rate)) · \(Format.rate($0, per: unit))" }
                             ?? Format.money(rate))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.green)

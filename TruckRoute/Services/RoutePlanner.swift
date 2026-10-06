@@ -11,13 +11,27 @@ final class RoutePlanner {
     private(set) var progressNote: String?
     private(set) var errorMessage: String?
 
+    /// Fingerprint of the loads and yard the current route was built from, so
+    /// the Route tab can tell when what's on screen no longer matches the
+    /// board. Nil when nothing has been planned yet.
+    private(set) var plannedSignature: Int?
+
+    private let coordinateResolver: LoadCoordinateResolver
+
+    /// When the last directions request was sent, so the next one can wait out
+    /// the remainder of `directionsInterval` rather than piling on. Pacing is
+    /// bookkeeping, not state any view should re-render for.
+    @ObservationIgnored private var lastDirectionsRequest: ContinuousClock.Instant?
+
+    init(coordinateResolver: LoadCoordinateResolver = .live) {
+        self.coordinateResolver = coordinateResolver
+    }
+
     /// Orders the week's loads and measures each leg.
     ///
     /// Loads are grouped by pickup day so the truck never runs a Friday load on
-    /// Monday, then ordered within each day by nearest-neighbor: from where the
-    /// truck currently sits, take the closest remaining pickup, run it to its
-    /// drop-off, repeat. Distance for ordering is straight-line — good enough to
-    /// pick the next stop, and it avoids a directions request per candidate.
+    /// Monday. `RouteOrdering` then decides the order within each day — see
+    /// there for the two rules it applies.
     func plan(loads: [Load], from homeBase: Place) async {
         guard !isPlanning else { return }
         isPlanning = true
@@ -27,6 +41,8 @@ final class RoutePlanner {
             progressNote = nil
         }
 
+        plannedSignature = Self.signature(loads: loads, homeBase: homeBase)
+
         guard !loads.isEmpty else {
             route = PlannedRoute()
             return
@@ -35,7 +51,7 @@ final class RoutePlanner {
         progressNote = "Looking up addresses…"
         let start: CLLocationCoordinate2D
         do {
-            start = try await resolveCoordinate(for: homeBase)
+            start = try await coordinateResolver.resolve(homeBase)
         } catch {
             errorMessage = "Couldn't find the address for \(homeBase.displayName), your home base."
             return
@@ -55,8 +71,8 @@ final class RoutePlanner {
             do {
                 routable.append((
                     load,
-                    try await resolveCoordinate(for: pickup),
-                    try await resolveCoordinate(for: dropoff)
+                    try await coordinateResolver.resolve(pickup),
+                    try await coordinateResolver.resolve(dropoff)
                 ))
             } catch {
                 skipped.append(SkippedLoad(
@@ -83,13 +99,21 @@ final class RoutePlanner {
 
         var current = start
         for day in byDay.keys.sorted() {
-            var remaining = byDay[day] ?? []
-            while !remaining.isEmpty {
-                let index = remaining.indices.min { a, b in
-                    distance(from: current, to: remaining[a].pickup)
-                        < distance(from: current, to: remaining[b].pickup)
-                }!
-                let entry = remaining.remove(at: index)
+            let dayLoads = byDay[day] ?? []
+            let ordered = RouteOrdering.order(
+                dayLoads.map {
+                    OrderableLoad(
+                        pickupOpens: $0.load.pickupDate,
+                        pickup: $0.pickup,
+                        dropoff: $0.dropoff
+                    )
+                },
+                from: current,
+                calendar: calendar
+            )
+
+            for index in ordered {
+                let entry = dayLoads[index]
                 stops.append(RouteStop(
                     kind: .pickup,
                     placeName: entry.load.pickup?.displayName ?? "",
@@ -97,7 +121,10 @@ final class RoutePlanner {
                     coordinate: entry.pickup,
                     loadReference: entry.load.displayName,
                     day: day,
-                    loadRate: entry.load.rate
+                    loadRate: entry.load.rate,
+                    windowStart: entry.load.pickupDate,
+                    deadline: entry.load.pickupWindowEnd,
+                    serviceDurationMinutes: entry.load.serviceDurationMinutes
                 ))
                 stops.append(RouteStop(
                     kind: .dropoff,
@@ -106,7 +133,10 @@ final class RoutePlanner {
                     coordinate: entry.dropoff,
                     loadReference: entry.load.displayName,
                     day: day,
-                    loadRate: entry.load.rate
+                    loadRate: entry.load.rate,
+                    windowStart: entry.load.deliveryWindowStart,
+                    deadline: entry.load.deliveryWindowEnd ?? entry.load.deliveryDate,
+                    serviceDurationMinutes: entry.load.serviceDurationMinutes
                 ))
                 current = entry.dropoff
             }
@@ -132,16 +162,52 @@ final class RoutePlanner {
 
     func clear() {
         route = nil
+        plannedSignature = nil
         errorMessage = nil
     }
 
-    /// Geocodes a place once and caches the result on it, so replanning and
-    /// other loads using the same place cost nothing.
-    private func resolveCoordinate(for place: Place) async throws -> CLLocationCoordinate2D {
-        if let cached = place.coordinate { return cached }
-        let coordinate = try await GeocodingService.shared.coordinate(for: place.address)
-        place.coordinate = coordinate
-        return coordinate
+    func dismissError() {
+        errorMessage = nil
+    }
+
+    /// A fingerprint of everything a plan depends on.
+    ///
+    /// Compared against `plannedSignature` to spot a route that's gone stale:
+    /// editing a load's times, swapping an address, marking one delivered or
+    /// adding a new one all leave the old plan on screen looking authoritative
+    /// when it no longer describes the week.
+    ///
+    /// Per-load hashes are sorted before being combined so the result doesn't
+    /// depend on the order the query happened to return. It's only ever
+    /// compared with another value from the same process, which is all
+    /// `Hasher` guarantees.
+    static func signature(loads: [Load], homeBase: Place) -> Int {
+        var perLoad: [Int] = []
+        for load in loads {
+            var hasher = Hasher()
+            hasher.combine(load.persistentModelID)
+            hasher.combine(load.pickup?.persistentModelID)
+            hasher.combine(load.dropoff?.persistentModelID)
+            hasher.combine(load.pickup?.address)
+            hasher.combine(load.dropoff?.address)
+            hasher.combine(load.pickupDate)
+            hasher.combine(load.pickupWindowEnd)
+            hasher.combine(load.deliveryDate)
+            hasher.combine(load.deliveryWindowStart)
+            hasher.combine(load.deliveryWindowEnd)
+            hasher.combine(load.serviceDurationMinutes)
+            hasher.combine(load.rate)
+            hasher.combine(load.isDelivered)
+            perLoad.append(hasher.finalize())
+        }
+
+        var hasher = Hasher()
+        hasher.combine(homeBase.persistentModelID)
+        hasher.combine(homeBase.address)
+        for value in perLoad.sorted() {
+            hasher.combine(value)
+        }
+        return hasher.finalize()
     }
 
     /// Fills in drive time, distance and the drawable polyline for each leg.
@@ -154,16 +220,10 @@ final class RoutePlanner {
         for index in working.stops.indices.dropFirst() {
             progressNote = "Measuring leg \(index) of \(working.stops.count - 1)…"
 
-            let request = MKDirections.Request()
-            request.source = MKMapItem(
-                placemark: MKPlacemark(coordinate: working.stops[index - 1].coordinate)
-            )
-            request.destination = MKMapItem(
-                placemark: MKPlacemark(coordinate: working.stops[index].coordinate)
-            )
-            request.transportType = .automobile
-
-            if let leg = try? await MKDirections(request: request).calculate().routes.first {
+            if let leg = await drivingRoute(
+                from: working.stops[index - 1].coordinate,
+                to: working.stops[index].coordinate
+            ) {
                 working.stops[index].travelTime = leg.expectedTravelTime
                 working.stops[index].distance = leg.distance
                 working.stops[index].polyline = leg.polyline
@@ -171,22 +231,55 @@ final class RoutePlanner {
             route = working
         }
 
-        // A load's miles are the empty run to its pickup plus the loaded run to
-        // its drop-off. Stops are built pickup-then-drop-off, so the leg before
-        // a drop-off is always that load's deadhead.
-        for index in working.stops.indices where working.stops[index].kind == .dropoff {
-            let loaded = working.stops[index].distance ?? 0
-            let empty = index > 0 ? (working.stops[index - 1].distance ?? 0) : 0
-            working.stops[index].allMiles = loaded + empty
-        }
+        working.assignLoadMiles()
+        working.stops = RouteScheduler.schedule(working.stops)
         route = working
     }
 
-    private func distance(
-        from: CLLocationCoordinate2D,
-        to: CLLocationCoordinate2D
-    ) -> CLLocationDistance {
-        CLLocation(latitude: from.latitude, longitude: from.longitude)
-            .distance(from: CLLocation(latitude: to.latitude, longitude: to.longitude))
+    /// MapKit throttles directions requests and starts refusing them once they
+    /// come back to back. A refused leg isn't an error the user sees — it just
+    /// goes unmeasured, understating the miles, the rate per mile and the
+    /// schedule. A 25-load week is 51 legs, so firing them off as fast as they
+    /// complete runs straight into that limit.
+    ///
+    /// Apple doesn't publish the ceiling; roughly 50 requests a minute is the
+    /// figure that holds up in practice, so requests are spaced to stay under
+    /// it. This is the slow part of planning, which is why `plan` reports
+    /// progress per leg.
+    private static let directionsInterval: Duration = .milliseconds(1_250)
+
+    private func drivingRoute(
+        from source: CLLocationCoordinate2D,
+        to destination: CLLocationCoordinate2D
+    ) async -> MKRoute? {
+        // Two attempts: one paced normally, and if that was refused anyway, one
+        // after a longer wait. Backing off further would cost more than the leg
+        // is worth — it's reported as unmeasured instead.
+        for attempt in 0..<2 {
+            await pace(extra: attempt > 0 ? .seconds(3) : .zero)
+
+            let request = MKDirections.Request()
+            request.source = MKMapItem(placemark: MKPlacemark(coordinate: source))
+            request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
+            request.transportType = .automobile
+
+            if let leg = try? await MKDirections(request: request).calculate().routes.first {
+                return leg
+            }
+        }
+        return nil
+    }
+
+    /// Sleeps until at least `directionsInterval` (plus `extra`) has passed
+    /// since the last directions request, then marks this moment as the latest.
+    private func pace(extra: Duration) async {
+        let gap = Self.directionsInterval + extra
+        if let last = lastDirectionsRequest {
+            let waited = ContinuousClock.now - last
+            if waited < gap {
+                try? await Task.sleep(for: gap - waited)
+            }
+        }
+        lastDirectionsRequest = ContinuousClock.now
     }
 }
